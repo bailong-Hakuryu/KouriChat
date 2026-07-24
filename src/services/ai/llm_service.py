@@ -111,17 +111,24 @@ class LLMService:
             return "这是你们今天的第一次对话。"
     
         try:
-            # chat_contexts 最后一条是刚刚加入的当前用户消息，
-            # 需要从 [:-1] 中找上一条有时间戳的历史消息，才能算出真实时间间隔
-            history = self.chat_contexts[user_id][:-1]
-            
-            last_msg_time = None
+            current_msg = self.chat_contexts[user_id][-1]
             current_time = datetime.datetime.now()
-        
+            if "timestamp" in current_msg and current_msg["timestamp"]:
+                try:
+                    current_time = datetime.datetime.fromisoformat(current_msg["timestamp"])
+                except Exception:
+                    current_time = datetime.datetime.now()
+
+            history = self.chat_contexts[user_id][:-1]
+            last_msg_time = None
+
             for msg in reversed(history):
-                if 'timestamp' in msg:
-                    last_msg_time = datetime.datetime.fromisoformat(msg['timestamp'])
-                    break
+                if 'timestamp' in msg and msg['timestamp']:
+                    try:
+                        last_msg_time = datetime.datetime.fromisoformat(msg['timestamp'])
+                        break
+                    except Exception:
+                        continue
         
             if last_msg_time:
                 time_diff = current_time - last_msg_time
@@ -136,7 +143,10 @@ class LLMService:
                     hours = seconds // 3600
                     time_desc = f"距离上条消息过去了{hours}小时"
                 
-                return f"{time_desc}，请根据时间的流逝，调整回答内容。"
+                if seconds < 7200:
+                    return f"{time_desc}，对话正在实时连续进行中，尚未跨越到次日或清晨，请保持当前时间段与场景的连续性。"
+                else:
+                    return f"{time_desc}，请根据时间的流逝，调整回答内容。"
         
         except Exception as e:
             logger.error(f"构建时间上下文失败: {str(e)}")
@@ -322,11 +332,19 @@ class LLMService:
         logger.debug("最终提示词结构：当前时间 + (base.md + 世界观 + 记忆 + 人设)")
 
         # 构建消息列表
-        # 过滤内部字段（如 timestamp），只发送 role + content 给 API
-        clean_history = [
-            {"role": m["role"], "content": m["content"]}
-            for m in self.chat_contexts.get(user_id, [])[-self.config["max_groups"] * 2:]
-        ]
+        # 为历史消息附带时间戳，防止模型在连续对话中误判时间发生跨日/跨时段幻觉
+        clean_history = []
+        for m in self.chat_contexts.get(user_id, [])[-self.config["max_groups"] * 2:]:
+            content = m["content"]
+            time_prefix = ""
+            if "timestamp" in m and m["timestamp"]:
+                try:
+                    dt = datetime.datetime.fromisoformat(m["timestamp"])
+                    time_prefix = dt.strftime("[%H:%M] ")
+                except Exception:
+                    time_prefix = ""
+            clean_history.append({"role": m["role"], "content": f"{time_prefix}{content}"})
+
         messages = [
             {"role": "system", "content": final_prompt},
             *clean_history
@@ -334,10 +352,17 @@ class LLMService:
 
         # 为 Ollama 构建消息内容
         chat_history = self.chat_contexts.get(user_id, [])[-self.config["max_groups"] * 2:]
-        history_text = "\n".join([
-            f"{msg['role']}: {msg['content']}"
-            for msg in chat_history
-        ])
+        history_lines = []
+        for msg in chat_history:
+            time_prefix = ""
+            if "timestamp" in msg and msg["timestamp"]:
+                try:
+                    dt = datetime.datetime.fromisoformat(msg["timestamp"])
+                    time_prefix = dt.strftime("[%H:%M] ")
+                except Exception:
+                    time_prefix = ""
+            history_lines.append(f"{time_prefix}{msg['role']}: {msg['content']}")
+        history_text = "\n".join(history_lines)
         ollama_message = {
             "role": "user",
             "content": f"{final_prompt}\n\n对话历史：\n{history_text}\n\n用户问题：{message}"
