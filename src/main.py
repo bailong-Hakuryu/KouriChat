@@ -347,13 +347,18 @@ def initialize_services():
         base_url=config.llm.base_url,
         image_model=config.media.image_generation.model
     )
+    mem_api_key = config.memory_analysis.api_key if hasattr(config, 'memory_analysis') and config.memory_analysis.api_key else DEEPSEEK_API_KEY
+    mem_base_url = config.memory_analysis.base_url if hasattr(config, 'memory_analysis') and config.memory_analysis.base_url else DEEPSEEK_BASE_URL
+    mem_model = config.memory_analysis.model if hasattr(config, 'memory_analysis') and config.memory_analysis.model else MODEL
+    mem_temp = config.memory_analysis.temperature if hasattr(config, 'memory_analysis') and config.memory_analysis.temperature else TEMPERATURE
+
     memory_service = MemoryService(
         root_dir=root_dir,
-        api_key=DEEPSEEK_API_KEY,
-        base_url=DEEPSEEK_BASE_URL,
-        model=MODEL,
+        api_key=mem_api_key,
+        base_url=mem_base_url,
+        model=mem_model,
         max_token=MAX_TOKEN,
-        temperature=TEMPERATURE,
+        temperature=mem_temp,
         max_groups=MAX_GROUPS
     )
 

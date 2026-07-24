@@ -1,7 +1,7 @@
 import os
 import shutil
 import json
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, Response
 from pathlib import Path
 from datetime import datetime
 
@@ -462,4 +462,173 @@ def get_avatar_users():
             
         return jsonify({'status': 'success', 'users': users})
     except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}) 
+        return jsonify({'status': 'error', 'message': str(e)})
+
+# --------------------------------------------------------------------------
+# 高级记忆面板与时间线 API 路由
+# --------------------------------------------------------------------------
+from modules.memory.memory_service import MemoryService
+
+_memory_service_instance = None
+
+def get_memory_service():
+    global _memory_service_instance
+    if _memory_service_instance is None:
+        try:
+            from data.config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, MODEL, TEMPERATURE, MAX_TOKEN, MAX_GROUPS
+            api_key = DEEPSEEK_API_KEY
+            base_url = DEEPSEEK_BASE_URL
+            model = MODEL
+            temp = TEMPERATURE
+            max_token = MAX_TOKEN
+            max_groups = MAX_GROUPS
+        except Exception:
+            api_key = "dummy"
+            base_url = "https://api.openai.com/v1"
+            model = "gpt-3.5-turbo"
+            temp = 0.7
+            max_token = 2000
+            max_groups = 10
+
+        _memory_service_instance = MemoryService(
+            root_dir='.',
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            max_token=max_token,
+            temperature=temp,
+            max_groups=max_groups
+        )
+    return _memory_service_instance
+
+
+@avatar_bp.route('/load_memory_nodes')
+def load_memory_nodes():
+    """加载角色的动态记忆节点库"""
+    try:
+        avatar_name = request.args.get('avatar')
+        user_id = request.args.get('user_id', 'default')
+        if not avatar_name:
+            return jsonify({'status': 'error', 'message': '未提供角色名称'})
+
+        mem_service = get_memory_service()
+        nodes = mem_service.get_all_nodes(avatar_name, user_id)
+        return jsonify({'status': 'success', 'nodes': nodes})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+@avatar_bp.route('/add_memory_node', methods=['POST'])
+def add_memory_node():
+    """手动新增记忆节点"""
+    try:
+        data = request.get_json()
+        avatar_name = data.get('avatar')
+        user_id = data.get('user_id', 'default')
+        content = data.get('content', '').strip()
+        type_str = data.get('node_type', 'fact')
+        tags = data.get('tags', [])
+        importance = float(data.get('importance', 0.8))
+        confidence = float(data.get('confidence', 0.9))
+
+        if not avatar_name or not content:
+            return jsonify({'status': 'error', 'message': '参数缺失'})
+
+        tags_list = tags if isinstance(tags, list) else [t.strip() for t in str(tags).split(',') if t.strip()]
+
+        mem_service = get_memory_service()
+        node_dict = mem_service.add_custom_node(
+            avatar_name=avatar_name,
+            user_id=user_id,
+            content=content,
+            node_type=type_str,
+            tags=tags_list,
+            importance=importance,
+            confidence=confidence
+        )
+
+        return jsonify({'status': 'success', 'node': node_dict})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+@avatar_bp.route('/delete_memory_node', methods=['POST'])
+def delete_memory_node():
+    """按 node_id 删除指定的记忆节点"""
+    try:
+        data = request.get_json()
+        avatar_name = data.get('avatar')
+        user_id = data.get('user_id', 'default')
+        node_id = data.get('node_id')
+
+        if not avatar_name or not node_id:
+            return jsonify({'status': 'error', 'message': '参数缺失'})
+
+        mem_service = get_memory_service()
+        success = mem_service.delete_node(avatar_name, user_id, node_id)
+        if success:
+            return jsonify({'status': 'success'})
+        return jsonify({'status': 'error', 'message': '节点未找到或删除失败'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+@avatar_bp.route('/load_timeline_entries')
+def load_timeline_entries():
+    """加载角色的第一人称体验时间线"""
+    try:
+        avatar_name = request.args.get('avatar')
+        user_id = request.args.get('user_id', 'default')
+        if not avatar_name:
+            return jsonify({'status': 'error', 'message': '未提供角色名称'})
+
+        mem_service = get_memory_service()
+        entries = mem_service.get_timeline_entries(avatar_name, user_id, limit=50)
+
+        return jsonify({'status': 'success', 'entries': entries})
+
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+@avatar_bp.route('/export_memory_pack')
+def export_memory_pack():
+    """导出 MemoryPack 标准记忆快照 JSON"""
+    try:
+        avatar_name = request.args.get('avatar')
+        user_id = request.args.get('user_id', 'default')
+        if not avatar_name:
+            return jsonify({'status': 'error', 'message': '未提供角色名称'})
+
+        mem_service = get_memory_service()
+        pack = mem_service.export_memory_pack(avatar_name, user_id)
+
+        filename = f"erii_memory_pack_{avatar_name}_{user_id}.erii"
+        response = Response(pack.to_json(), mimetype='application/json')
+        response.headers["Content-Disposition"] = f"attachment; filename={filename}"
+        return response
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+@avatar_bp.route('/import_memory_pack', methods=['POST'])
+def import_memory_pack():
+    """恢复/导入 MemoryPack 快照包"""
+    try:
+        data = request.get_json()
+        avatar_name = data.get('avatar')
+        user_id = data.get('user_id', 'default')
+        pack_json = data.get('pack_json')
+        overwrite = bool(data.get('overwrite', False))
+
+        if not avatar_name or not pack_json:
+            return jsonify({'status': 'error', 'message': '未提供角色或记忆包数据'})
+
+        mem_service = get_memory_service()
+        pack_dict = json.loads(pack_json) if isinstance(pack_json, str) else pack_json
+        mem_service.import_memory_pack(avatar_name, user_id, pack_dict, overwrite=overwrite)
+
+        return jsonify({'status': 'success', 'message': '记忆包导入成功'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+ 

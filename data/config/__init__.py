@@ -119,6 +119,13 @@ class IntentRecognitionSettings:
     temperature: float
 
 @dataclass
+class MemoryAnalysisSettings:
+    api_key: str
+    base_url: str
+    model: str
+    temperature: float
+
+@dataclass
 class OneBotSettings:
     enabled: bool
     host: str
@@ -138,6 +145,7 @@ class Config:
         self.auth: AuthSettings
         self.network_search: NetworkSearchSettings
         self.intent_recognition: IntentRecognitionSettings
+        self.memory_analysis: MemoryAnalysisSettings
         self.onebot: OneBotSettings
         self.version: str = "1.0.0"  # 配置文件版本
         self.load_config()
@@ -522,6 +530,15 @@ class Config:
                     base_url=intent_recognition_data.get('base_url', {}).get('value', 'https://api.kourichat.com/v1'),
                     model=intent_recognition_data.get('model', {}).get('value', 'kourichat-v3'),
                     temperature=float(intent_recognition_data.get('temperature', {}).get('value', 0.1))
+                )
+
+                # 记忆整理与分析设置 (若未单独配置，退回使用 LLM 主配置)
+                memory_analysis_data = categories.get('memory_analysis_settings', {}).get('settings', {})
+                self.memory_analysis = MemoryAnalysisSettings(
+                    api_key=memory_analysis_data.get('api_key', {}).get('value', '') or self.llm.api_key,
+                    base_url=memory_analysis_data.get('base_url', {}).get('value', '') or self.llm.base_url,
+                    model=memory_analysis_data.get('model', {}).get('value', '') or self.llm.model,
+                    temperature=float(memory_analysis_data.get('temperature', {}).get('value', 0.1))
                 )
 
                 # OneBot 设置

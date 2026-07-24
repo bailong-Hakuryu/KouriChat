@@ -298,6 +298,24 @@
                 </button>
             </div>
             
+            <!-- 长期人格记忆系统控制台卡片 -->
+            <div class="glass-panel mb-4 bg-body-tertiary">
+                <div class="d-flex align-items-center justify-content-between flex-wrap">
+                    <div>
+                        <h5 class="mb-1"><i class="bi bi-cpu-fill text-primary me-2"></i>长期人格记忆控制台 (Memory Console v2)</h5>
+                        <div class="text-muted small">查看与管理动态记忆节点、过滤器生命周期状态 (ACTIVE/WEAK/ARCHIVED) 与置信度、查阅角色心路历程</div>
+                    </div>
+                    <div class="d-flex gap-2 mt-2 mt-sm-0">
+                        <button type="button" class="btn btn-outline-primary" id="editMemoryNodesBtn">
+                            <i class="bi bi-tags-fill me-1"></i>🏷️ 动态记忆节点
+                        </button>
+                        <button type="button" class="btn btn-outline-warning" id="viewTimelineBtn">
+                            <i class="bi bi-journal-bookmark-fill me-1"></i>📖 角色心路历程
+                        </button>
+                    </div>
+                </div>
+            </div>
+
             <form id="avatarForm">
                 <div class="glass-panel mb-4">
                     <label for="task" class="form-label">任务</label>
@@ -405,6 +423,120 @@
                         <a href="https://jq.qq.com/?_wv=1027&k=5F4Gz5K" class="btn btn-secondary" target="_blank">
                             加入QQ群 715616260 下载
                         </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 动态记忆节点控制台模态框 -->
+    <div class="modal fade" id="memoryNodesModal" tabindex="-1" aria-labelledby="memoryNodesModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="memoryNodesModalLabel"><i class="bi bi-tags-fill me-2 text-primary"></i>动态记忆节点控制台 (Memory Node Console)</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <!-- 顶栏过滤器与工具栏 -->
+                    <div class="row g-2 mb-3">
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1 fw-bold">节点类型</label>
+                            <select id="nodeTypeFilter" class="form-select form-select-sm">
+                                <option value="all">全部类型 (All Types)</option>
+                                <option value="fact">FACT (事实)</option>
+                                <option value="preference">PREFERENCE (偏好)</option>
+                                <option value="event">EVENT (经历/事件)</option>
+                                <option value="emotion">EMOTION (情绪)</option>
+                                <option value="relationship">RELATIONSHIP (关系)</option>
+                                <option value="core">CORE (核心常驻)</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small mb-1 fw-bold">生命周期状态 (Lifecycle State)</label>
+                            <select id="nodeStateFilter" class="form-select form-select-sm">
+                                <option value="all">全部状态 (All States)</option>
+                                <option value="active">ACTIVE (活跃状态)</option>
+                                <option value="weak">WEAK (弱化/衰减状态)</option>
+                                <option value="archived">ARCHIVED (归档状态)</option>
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label small mb-1 fw-bold">关键词/Tag 检索</label>
+                            <input type="text" id="nodeSearchInput" class="form-control form-control-sm" placeholder="输入关键词或标签搜索...">
+                        </div>
+                        <div class="col-md-2 d-flex align-items-end">
+                            <button type="button" class="btn btn-sm btn-primary w-100" id="showAddNodeFormBtn">
+                                <i class="bi bi-plus-lg me-1"></i>新增节点
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- 新增节点折叠表单 -->
+                    <div class="collapse mb-3" id="addNodeCollapse">
+                        <div class="card card-body bg-body-tertiary border-dashed">
+                            <h6 class="card-title fw-bold mb-3"><i class="bi bi-journal-plus me-2 text-success"></i>手动添加记忆节点</h6>
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-4">
+                                    <label class="form-label small">类型</label>
+                                    <select id="newNodeType" class="form-select form-select-sm">
+                                        <option value="fact">FACT (客观事实)</option>
+                                        <option value="preference">PREFERENCE (用户偏好)</option>
+                                        <option value="event">EVENT (共同经历)</option>
+                                        <option value="emotion">EMOTION (情绪节点)</option>
+                                        <option value="relationship">RELATIONSHIP (关系节点)</option>
+                                        <option value="core">CORE (核心常驻)</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label small">重要度 (0.1 - 1.0)</label>
+                                    <input type="number" id="newNodeImportance" class="form-control form-control-sm" min="0.1" max="1.0" step="0.05" value="0.8">
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label small">置信度 (0.1 - 1.0)</label>
+                                    <input type="number" id="newNodeConfidence" class="form-control form-control-sm" min="0.1" max="1.0" step="0.05" value="0.9">
+                                </div>
+                            </div>
+                            <div class="mb-2">
+                                <label class="form-label small">记忆内容</label>
+                                <textarea id="newNodeContent" class="form-control form-control-sm" rows="2" placeholder="请输入结构化记忆内容..."></textarea>
+                            </div>
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-9">
+                                    <label class="form-label small">标签 Tags (逗号分隔)</label>
+                                    <input type="text" id="newNodeTags" class="form-control form-control-sm" placeholder="例如: 爱好, 物理学, 喜好">
+                                </div>
+                                <div class="col-md-3 d-flex align-items-end">
+                                    <button type="button" class="btn btn-sm btn-success w-100" id="submitNewNodeBtn">
+                                        <i class="bi bi-check-circle me-1"></i>提交保存
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 节点列表容器 -->
+                    <div id="memoryNodesContainer" class="d-flex flex-column gap-2">
+                        <div class="text-center py-4 text-muted">
+                            <div class="spinner-border spinner-border-sm me-2" role="status"></div>加载记忆节点库...
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 角色心路历程时间线模态框 -->
+    <div class="modal fade" id="timelineModal" tabindex="-1" aria-labelledby="timelineModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="timelineModalLabel"><i class="bi bi-journal-bookmark-fill me-2 text-warning"></i>角色第一人称心路历程时间线</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="timelineContainer" class="timeline-wrapper">
+                        <div class="text-center py-4 text-muted">加载体验时间线...</div>
                     </div>
                 </div>
             </div>
@@ -939,7 +1071,7 @@
                                                     </div>
                                                     <div class="mb-2">
                                                         <label class="form-label fw-bold">系统回复</label>
-                                                        <textarea class="form-control bot-message-input" rows="2" data-index="${index}">${conv.bot || ''}</textarea>
+                                                        <textarea class="form-control bot-message-input" rows="2" data-index="${index}">${(conv.bot || '').replace(/\$/g, '\n')}</textarea>
                                                     </div>
                                                 </div>
                                             </div>
@@ -1162,8 +1294,259 @@
                 });
             }
             
+            // ------------------------------------------------------------------
+            // 动态记忆节点控制台 & 时间线交互逻辑
+            // ------------------------------------------------------------------
+            let allMemoryNodes = [];
+
+            /**
+             * Converts a 'YYYY-MM-DD HH:MM:SS' datetime string to a concise Chinese
+             * relative time label, e.g. '3天前', '上周', '1个月前'.
+             */
+            function formatRelativeTime(dtStr) {
+                if (!dtStr) return '';
+                const dt = new Date(dtStr.replace(' ', 'T'));
+                if (isNaN(dt)) return '';
+                const diffMs = Date.now() - dt.getTime();
+                const diffDays = Math.floor(diffMs / 86400000);
+                if (diffDays < 0) return '刚刚';
+                if (diffDays === 0) {
+                    const diffHours = Math.floor(diffMs / 3600000);
+                    if (diffHours === 0) {
+                        const diffMins = Math.floor(diffMs / 60000);
+                        return diffMins < 5 ? '刚刚' : `${diffMins}分钟前`;
+                    }
+                    return `${diffHours}小时前`;
+                }
+                if (diffDays === 1) return '昨天';
+                if (diffDays < 7) return `${diffDays}天前`;
+                if (diffDays < 14) return '上周';
+                if (diffDays < 30) return `${Math.floor(diffDays / 7)}周前`;
+                if (diffDays < 90) return `${Math.floor(diffDays / 30)}个月前`;
+                return '很久前';
+            }
+
+
+
+            function loadMemoryNodes() {
+                const container = document.getElementById('memoryNodesContainer');
+                container.innerHTML = '<div class="text-center py-4 text-muted"><div class="spinner-border spinner-border-sm me-2"></div>加载记忆节点库...</div>';
+
+                fetch(`/load_memory_nodes?avatar=${currentAvatar}&user_id=${currentUser}`)
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.status === 'success') {
+                            allMemoryNodes = data.nodes || [];
+                            renderMemoryNodes();
+                        } else {
+                            container.innerHTML = `<div class="alert alert-danger mb-0">加载失败: ${data.message}</div>`;
+                        }
+                    })
+                    .catch(err => {
+                        container.innerHTML = `<div class="alert alert-danger mb-0">加载异常: ${err}</div>`;
+                    });
+            }
+
+            function renderMemoryNodes() {
+                const container = document.getElementById('memoryNodesContainer');
+                const typeFilter = document.getElementById('nodeTypeFilter').value;
+                const stateFilter = document.getElementById('nodeStateFilter').value;
+                const searchKey = document.getElementById('nodeSearchInput').value.toLowerCase().trim();
+
+                const filtered = allMemoryNodes.filter(node => {
+                    if (typeFilter !== 'all' && node.node_type !== typeFilter) return false;
+                    if (stateFilter !== 'all' && (node.state || 'active') !== stateFilter) return false;
+                    if (searchKey) {
+                        const contentMatch = (node.content || '').toLowerCase().includes(searchKey);
+                        const tagMatch = (node.tags || []).some(t => t.toLowerCase().includes(searchKey));
+                        if (!contentMatch && !tagMatch) return false;
+                    }
+                    return true;
+                });
+
+                if (filtered.length === 0) {
+                    container.innerHTML = '<div class="text-center py-4 text-muted border rounded">暂无符合条件的记忆节点</div>';
+                    return;
+                }
+
+                const badgeTypes = {
+                    'fact': 'bg-info text-dark',
+                    'preference': 'bg-success',
+                    'event': 'bg-primary',
+                    'emotion': 'bg-danger',
+                    'relationship': 'bg-warning text-dark',
+                    'core': 'bg-dark',
+                    'instruction': 'bg-secondary'
+                };
+
+                const stateBadges = {
+                    'active': '<span class="badge bg-success" title="活跃状态"><i class="bi bi-record-circle me-1"></i>ACTIVE</span>',
+                    'weak': '<span class="badge bg-warning text-dark" title="弱化/衰减状态"><i class="bi bi-hourglass-split me-1"></i>WEAK</span>',
+                    'archived': '<span class="badge bg-secondary" title="归档状态"><i class="bi bi-archive me-1"></i>ARCHIVED</span>'
+                };
+
+                let html = '';
+                filtered.forEach(node => {
+                    const badgeClass = badgeTypes[node.node_type] || 'bg-secondary';
+                    const stateBadgeHtml = stateBadges[node.state] || stateBadges['active'];
+                    const confPercent = Math.round((node.confidence || 0.8) * 100);
+                    const recallCount = node.access_count || 0;
+                    const weightVal = (node.effective_weight !== undefined) ? node.effective_weight.toFixed(2) : '0.50';
+                    const createdAt = node.created_at || '';
+                    const relTime = createdAt ? formatRelativeTime(createdAt) : '';
+                    const relTimeHtml = relTime
+                        ? `<span class="badge bg-light text-secondary border" title="记忆形成时间: ${createdAt}"><i class="bi bi-clock-history me-1"></i>${relTime}</span>`
+                        : '';
+
+                    const tagsHtml = (node.tags || []).map(t => `<span class="badge bg-secondary-subtle text-secondary border me-1">#${t}</span>`).join('');
+
+                    html += `
+                        <div class="card border-subtle shadow-sm mb-2">
+                            <div class="card-body p-3">
+                                <div class="d-flex align-items-center justify-content-between flex-wrap mb-2 gap-2">
+                                    <div class="d-flex align-items-center gap-2 flex-wrap">
+                                        <span class="badge ${badgeClass} text-uppercase">${node.node_type}</span>
+                                        ${stateBadgeHtml}
+                                        <span class="badge bg-info-subtle text-info-emphasis border border-info-subtle" title="AI判断置信度">
+                                            <i class="bi bi-shield-check me-1"></i>置信度: ${confPercent}%
+                                        </span>
+                                        <span class="badge bg-primary-subtle text-primary border border-primary-subtle" title="被检索命中强化次数">
+                                            <i class="bi bi-cpu me-1"></i>被回想: ${recallCount}次
+                                        </span>
+                                        ${relTimeHtml}
+                                    </div>
+                                    <div class="d-flex align-items-center gap-2">
+                                        <span class="text-muted small">有效权重: <strong class="text-primary">${weightVal}</strong></span>
+                                        <button type="button" class="btn btn-sm btn-outline-danger border-0" onclick="deleteNode('${node.node_id}')" title="删除此节点">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="mb-2 fw-normal text-body">${node.content}</div>
+                                <div>${tagsHtml}</div>
+                            </div>
+                        </div>
+                    `;
+                });
+
+                container.innerHTML = html;
+            }
+
+            window.deleteNode = function(nodeId) {
+                if (!confirm('确定要删除此记忆节点吗？')) return;
+                fetch('/delete_memory_node', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ avatar: currentAvatar, user_id: currentUser, node_id: nodeId })
+                })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        showToast('节点已删除', 'success');
+                        loadMemoryNodes();
+                    } else {
+                        showToast('删除失败: ' + data.message, 'error');
+                    }
+                });
+            };
+
+            function loadTimeline() {
+                const container = document.getElementById('timelineContainer');
+                container.innerHTML = '<div class="text-center py-4 text-muted"><div class="spinner-border spinner-border-sm me-2"></div>加载体验时间线...</div>';
+
+                fetch(`/load_timeline_entries?avatar=${currentAvatar}&user_id=${currentUser}`)
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.status === 'success') {
+                            const entries = data.entries || [];
+                            if (entries.length === 0) {
+                                container.innerHTML = '<div class="text-center py-4 text-muted border rounded">暂无角色心路历程记录</div>';
+                                return;
+                            }
+                            let html = '<ul class="list-group list-group-flush">';
+                            entries.forEach(e => {
+                                // entries are formatted as "[2025年07月20日 14:32:00] diary content"
+                                const timeMatch = e.match(/^(\[[^\]]+\])\s*(.*)$/);
+                                if (timeMatch) {
+                                    const timeTag = timeMatch[1];
+                                    const content = timeMatch[2];
+                                    html += `<li class="list-group-item bg-transparent py-2">
+                                        <div class="text-muted small mb-1"><i class="bi bi-calendar3 me-1"></i>${timeTag}</div>
+                                        <div><i class="bi bi-bookmark-heart text-warning me-2"></i>${content}</div>
+                                    </li>`;
+                                } else {
+                                    html += `<li class="list-group-item bg-transparent"><i class="bi bi-bookmark-heart text-warning me-2"></i>${e}</li>`;
+                                }
+                            });
+                            html += '</ul>';
+                            container.innerHTML = html;
+                        } else {
+                            container.innerHTML = `<div class="alert alert-danger mb-0">加载失败: ${data.message}</div>`;
+                        }
+                    });
+            }
+
             // 初始化各种事件监听器
             function initEventListeners() {
+                // 绑定动态记忆控制台按钮
+                document.getElementById('editMemoryNodesBtn').addEventListener('click', function() {
+                    new bootstrap.Modal(document.getElementById('memoryNodesModal')).show();
+                    loadMemoryNodes();
+                });
+
+                document.getElementById('viewTimelineBtn').addEventListener('click', function() {
+                    new bootstrap.Modal(document.getElementById('timelineModal')).show();
+                    loadTimeline();
+                });
+
+                document.getElementById('nodeTypeFilter').addEventListener('change', renderMemoryNodes);
+                document.getElementById('nodeStateFilter').addEventListener('change', renderMemoryNodes);
+                document.getElementById('nodeSearchInput').addEventListener('input', renderMemoryNodes);
+
+                document.getElementById('showAddNodeFormBtn').addEventListener('click', function() {
+                    const collapseEl = document.getElementById('addNodeCollapse');
+                    const bsCollapse = new bootstrap.Collapse(collapseEl);
+                    bsCollapse.toggle();
+                });
+
+                document.getElementById('submitNewNodeBtn').addEventListener('click', function() {
+                    const type = document.getElementById('newNodeType').value;
+                    const content = document.getElementById('newNodeContent').value.trim();
+                    const tagsStr = document.getElementById('newNodeTags').value;
+                    const importance = parseFloat(document.getElementById('newNodeImportance').value || 0.8);
+                    const confidence = parseFloat(document.getElementById('newNodeConfidence').value || 0.9);
+
+                    if (!content) {
+                        showToast('请输入节点内容', 'error');
+                        return;
+                    }
+
+                    fetch('/add_memory_node', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            avatar: currentAvatar,
+                            user_id: currentUser,
+                            node_type: type,
+                            content: content,
+                            tags: tagsStr,
+                            importance: importance,
+                            confidence: confidence
+                        })
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.status === 'success') {
+                            showToast('新增记忆节点成功', 'success');
+                            document.getElementById('newNodeContent').value = '';
+                            document.getElementById('newNodeTags').value = '';
+                            loadMemoryNodes();
+                        } else {
+                            showToast('新增失败: ' + data.message, 'error');
+                        }
+                    });
+                });
+
                 // 人设选择器变更事件
                 document.getElementById('avatarSelector').addEventListener('change', function() {
                     const selectedAvatar = this.value;
@@ -1176,7 +1559,6 @@
                     const selectedUser = this.value;
                     currentUser = selectedUser;
                     localStorage.setItem(`lastSelectedUser_${currentAvatar}`, selectedUser);
-                    // 这里不需要重新加载角色内容，只需记录当前选中的用户
                     showToast(`已切换到用户: ${selectedUser}`, 'success');
                 });
                 
@@ -1205,8 +1587,8 @@
                 // 确认删除人设按钮点击事件
                 document.getElementById('confirmDeleteBtn').addEventListener('click', deleteCurrentAvatar);
 
-            // 获取人设按钮点击事件
-            document.getElementById('getAvatarBtn').addEventListener('click', function() {
+                // 获取人设按钮点击事件
+                document.getElementById('getAvatarBtn').addEventListener('click', function() {
                     new bootstrap.Modal(document.getElementById('getAvatarModal')).show();
                 });
                 

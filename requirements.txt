@@ -27,3 +27,4 @@ cryptography>=3.0.0
 zhdate
 httpx-ws==0.7.2
 websockets>=12.0
+erii>=0.2.0

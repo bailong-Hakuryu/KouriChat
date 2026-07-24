@@ -213,6 +213,7 @@ def parse_config_groups() -> Dict[str, Dict[str, Any]]:
             "TTS 服务配置": {},
             "图像识别API配置": {},
             "意图识别API配置": {},
+            "记忆整理API配置": {},
             "主动消息配置": {},
             "消息配置": {},
             "人设配置": {},
@@ -337,6 +338,34 @@ def parse_config_groups() -> Dict[str, Dict[str, Any]]:
                 },
                 "INTENT_TEMPERATURE": {
                     "value": float(config.intent_recognition.temperature),
+                    "description": "温度参数",
+                    "type": "number",
+                    "min": 0.0,
+                    "max": 1.0
+                }
+            }
+        )
+
+        # 记忆整理API配置
+        config_groups["记忆整理API配置"].update(
+            {
+                "MEMORY_BASE_URL": {
+                    "value": getattr(config, 'memory_analysis', config.llm).base_url,
+                    "description": "API注册地址",
+                    "has_provider_options": True
+                },
+                "MEMORY_API_KEY": {
+                    "value": getattr(config, 'memory_analysis', config.llm).api_key,
+                    "description": "API密钥",
+                    "is_secret": False
+                },
+                "MEMORY_MODEL": {
+                    "value": getattr(config, 'memory_analysis', config.llm).model,
+                    "description": "AI模型选择",
+                    "has_model_options": True
+                },
+                "MEMORY_TEMPERATURE": {
+                    "value": float(getattr(config, 'memory_analysis', config.llm).temperature),
                     "description": "温度参数",
                     "type": "number",
                     "min": 0.0,
@@ -678,6 +707,10 @@ def update_config_value(config_data, key, value):
             'INTENT_BASE_URL': ['categories', 'intent_recognition_settings', 'settings', 'base_url', 'value'],
             'INTENT_MODEL': ['categories', 'intent_recognition_settings', 'settings', 'model', 'value'],
             'INTENT_TEMPERATURE': ['categories', 'intent_recognition_settings', 'settings', 'temperature', 'value'],
+            'MEMORY_API_KEY': ['categories', 'memory_analysis_settings', 'settings', 'api_key', 'value'],
+            'MEMORY_BASE_URL': ['categories', 'memory_analysis_settings', 'settings', 'base_url', 'value'],
+            'MEMORY_MODEL': ['categories', 'memory_analysis_settings', 'settings', 'model', 'value'],
+            'MEMORY_TEMPERATURE': ['categories', 'memory_analysis_settings', 'settings', 'temperature', 'value'],
             'IMAGE_MODEL': ['categories', 'media_settings', 'settings', 'image_generation', 'model', 'value'],
             'TEMP_IMAGE_DIR': ['categories', 'media_settings', 'settings', 'image_generation', 'temp_dir', 'value'],
             'TTS_API_URL': ['categories', 'media_settings', 'settings', 'text_to_speech', 'tts_api_url', 'value'],
@@ -786,6 +819,26 @@ def update_config_value(config_data, key, value):
                     current['categories']['intent_recognition_settings']['settings']['model'] = {'value': value, 'type': 'string'}
                 elif key == 'INTENT_TEMPERATURE':
                     current['categories']['intent_recognition_settings']['settings']['temperature'] = {'value': float(value), 'type': 'number', 'min': 0.0, 'max': 1.0}
+                return
+
+            # 特殊处理记忆整理相关配置
+            elif key in ['MEMORY_API_KEY', 'MEMORY_BASE_URL',
+                         'MEMORY_MODEL', 'MEMORY_TEMPERATURE']:
+                if 'categories' not in current:
+                    current['categories'] = {}
+                if 'memory_analysis_settings' not in current['categories']:
+                    current['categories']['memory_analysis_settings'] = {'title': '记忆整理API配置', 'settings': {}}
+                if 'settings' not in current['categories']['memory_analysis_settings']:
+                    current['categories']['memory_analysis_settings']['settings'] = {}
+
+                if key == 'MEMORY_API_KEY':
+                    current['categories']['memory_analysis_settings']['settings']['api_key'] = {'value': value, 'type': 'string', 'is_secret': True}
+                elif key == 'MEMORY_BASE_URL':
+                    current['categories']['memory_analysis_settings']['settings']['base_url'] = {'value': value, 'type': 'string'}
+                elif key == 'MEMORY_MODEL':
+                    current['categories']['memory_analysis_settings']['settings']['model'] = {'value': value, 'type': 'string'}
+                elif key == 'MEMORY_TEMPERATURE':
+                    current['categories']['memory_analysis_settings']['settings']['temperature'] = {'value': float(value), 'type': 'number', 'min': 0.0, 'max': 1.0}
                 return
 
             # 遍历路径直到倒数第二个元素
@@ -1655,9 +1708,11 @@ def check_dependencies():
                 missing_deps = [
                     pkg for pkg in required_packages
                     if pkg not in installed_packages and not (
-                        pkg == 'wxauto' and 'wxauto-py' in installed_packages
+                        (pkg == 'wxauto' and 'wxauto-py' in installed_packages) or
+                        (pkg == 'erii' and os.path.exists(os.path.join(ROOT_DIR, 'erii')))
                     )
                 ]
+
 
                 logger.debug(f"缺失的包: {missing_deps}")
 

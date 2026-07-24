@@ -1509,9 +1509,11 @@ def check_dependencies():
                 missing_deps = [
                     pkg for pkg in required_packages
                     if pkg not in installed_packages and not (
-                        pkg == 'wxauto' and 'wxauto-py' in installed_packages
+                        (pkg == 'wxauto' and 'wxauto-py' in installed_packages) or
+                        (pkg == 'erii' and os.path.exists(os.path.join(ROOT_DIR, 'erii')))
                     )
                 ]
+
 
                 logger.debug(f"缺失的包: {missing_deps}")
 

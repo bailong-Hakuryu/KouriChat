@@ -94,8 +94,11 @@ class LLMService:
         if user_id not in self.chat_contexts:
             self.chat_contexts[user_id] = []
 
-        # 添加新消息
-        self.chat_contexts[user_id].append({"role": role, "content": message})
+        # 添加新消息，user 消息附带时间戳供 _build_time_context 计算间隔
+        entry: dict = {"role": role, "content": message}
+        if role == "user":
+            entry["timestamp"] = datetime.datetime.now().isoformat()
+        self.chat_contexts[user_id].append(entry)
 
         # 维护上下文窗口
         while len(self.chat_contexts[user_id]) > self.config["max_groups"] * 2:
@@ -108,13 +111,14 @@ class LLMService:
             return "这是你们今天的第一次对话。"
     
         try:
-            # 获取最后两条消息的时间
-            recent_messages = self.chat_contexts[user_id][-2:]
-        
+            # chat_contexts 最后一条是刚刚加入的当前用户消息，
+            # 需要从 [:-1] 中找上一条有时间戳的历史消息，才能算出真实时间间隔
+            history = self.chat_contexts[user_id][:-1]
+            
             last_msg_time = None
             current_time = datetime.datetime.now()
         
-            for msg in reversed(recent_messages):
+            for msg in reversed(history):
                 if 'timestamp' in msg:
                     last_msg_time = datetime.datetime.fromisoformat(msg['timestamp'])
                     break
@@ -138,6 +142,7 @@ class LLMService:
             logger.error(f"构建时间上下文失败: {str(e)}")
     
         return "请注意时间的连续性。"
+
 
     def _sanitize_response(self, raw_text: str) -> str:
         """
@@ -317,9 +322,14 @@ class LLMService:
         logger.debug("最终提示词结构：当前时间 + (base.md + 世界观 + 记忆 + 人设)")
 
         # 构建消息列表
+        # 过滤内部字段（如 timestamp），只发送 role + content 给 API
+        clean_history = [
+            {"role": m["role"], "content": m["content"]}
+            for m in self.chat_contexts.get(user_id, [])[-self.config["max_groups"] * 2:]
+        ]
         messages = [
             {"role": "system", "content": final_prompt},
-            *self.chat_contexts.get(user_id, [])[-self.config["max_groups"] * 2:]
+            *clean_history
         ]
 
         # 为 Ollama 构建消息内容

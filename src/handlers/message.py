@@ -390,10 +390,11 @@ class MessageHandler:
             avatar_content = self.prompt_content
             logger.debug(f"角色提示文件大小: {len(avatar_content)} bytes")
 
-            # 步骤2：获取核心记忆 - 使用用户ID获取对应的记忆
-            core_memory = self.memory_service.get_core_memory(avatar_name, user_id=user_id)
-            core_memory_prompt = f"# 核心记忆\n{core_memory}" if core_memory else ""
-            logger.debug(f"核心记忆长度: {len(core_memory)}")
+            # 步骤2：获取相关性与衰减权重记忆 - 使用用户ID和消息意图进行选择性检索
+            core_memory_prompt = self.memory_service.get_selective_memory_prompt(
+                avatar_name=avatar_name, user_id=user_id, query=message
+            )
+            logger.debug(f"选择性检索记忆长度: {len(core_memory_prompt)}")
 
             # 获取历史上下文（仅在程序重启时）
             # 检查是否已经为该用户加载过上下文

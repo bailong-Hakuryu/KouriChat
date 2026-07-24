@@ -1,22 +1,34 @@
 import json
 import logging
 import os
+import threading
 from datetime import datetime
-from typing import List, Dict
+from typing import List, Dict, Optional, Tuple, Any
 
 from data.config import MAX_GROUPS
 from src.services.ai.llm_service import LLMService
 
-# 获取日志记录器
-logger = logging.getLogger('memory')
+from erii import ERIIEngine, ERIIConfig, MemoryNode as EriiNode, MemoryType as EriiType, MemoryPack
+from erii.adapters.custom_adapter import CallableLLMAdapter
+from erii.storage.sqlite_storage import SQLiteStorage
+from erii.core.queue.persistent_queue import PersistentTaskQueue
+
+from modules.memory.memory_storage import MemoryStorage
+from modules.memory.memory_node import MemoryNode, MemoryType
+
+logger = logging.getLogger('main')
 
 
 class MemoryService:
     """
-    新版记忆服务模块，包含两种记忆类型:
-    1. 短期记忆：用于保存最近对话，在程序重启后加载到上下文
-    2. 核心记忆：精简的用户核心信息摘要(50-100字)
-    每个用户拥有独立的记忆存储空间
+    KouriChat 长期人格记忆层 (E.R.I.I. Engine 整合版):
+    基于开源引擎 E.R.I.I. (v0.2.0) 构建：
+    1. 动态实例池 (Per Avatar & User ERIIEngine Pool) + SQLite 数据库持久化存储 (WAL 模式)
+    2. 体验时间线 + 动态印象节点 + 第一人称心理独白与悬念保鲜
+    3. RRF (Reciprocal Rank Fusion) 倒排与语义权重合成 + 多样性熔断 (Diversity Cap)
+    4. 零延迟后台持久化任务队列 (PersistentTaskQueue) + 异常退避重试
+    5. 透明无感历史数据迁移 (Auto Migration from legacy memory_nodes.json)
+    6. MemoryPack 标准快照导出/导入支持
     """
 
     def __init__(self, root_dir: str, api_key: str, base_url: str, model: str, max_token: int, temperature: float,
@@ -27,10 +39,10 @@ class MemoryService:
         self.model = model
         self.max_token = max_token
         self.temperature = temperature
-        self.max_groups = MAX_GROUPS if MAX_GROUPS else max_groups  # 保存上下文组数设置
-        self.llm_client = None
-        self.conversation_count = {}  # 记录每个角色与用户组合的对话计数: {avatar_name_user_id: count}
-        self.deepseek = LLMService(
+        self.max_groups = MAX_GROUPS if MAX_GROUPS else max_groups
+
+        # 辅助分析 LLM
+        self.analyzer_llm = LLMService(
             api_key=api_key,
             base_url=base_url,
             model=model,
@@ -39,369 +51,434 @@ class MemoryService:
             max_groups=max_groups
         )
 
-    def initialize_memory_files(self, avatar_name: str, user_id: str):
-        """初始化角色的记忆文件，确保文件存在"""
-        try:
-            # 确保记忆目录存在
-            memory_dir = self._get_avatar_memory_dir(avatar_name, user_id)
-            short_memory_path = self._get_short_memory_path(avatar_name, user_id)
-            core_memory_path = self._get_core_memory_path(avatar_name, user_id)
+        self.storage = MemoryStorage(root_dir=root_dir)
+        self._engine_pool: Dict[Tuple[str, str], ERIIEngine] = {}
+        self._pool_lock = threading.Lock()
 
-            # 初始化短期记忆文件（如果不存在）
+    def close(self):
+        """关闭所有 ERIIEngine 实例的后台归档 Worker 线程"""
+        with self._pool_lock:
+            for engine in self._engine_pool.values():
+                if hasattr(engine, 'archiver') and engine.archiver:
+                    engine.archiver.shutdown()
+            self._engine_pool.clear()
+
+
+    def _call_llm_chat(self, prompt: str) -> str:
+        """调用分析用 LLM 生成记忆分析结果"""
+        try:
+            res = self.analyzer_llm.chat([{"role": "user", "content": prompt}])
+            if res and not res.startswith("Error:"):
+                return res
+            return "{}"
+        except Exception as e:
+            logger.error(f"分析专用 LLM 调用异常: {e}")
+            return "{}"
+
+
+    def _get_engine(self, avatar_name: str, user_id: str) -> ERIIEngine:
+        """获取或创建指定 (avatar_name, user_id) 的 ERIIEngine 实例，带加锁与历史数据无感迁移"""
+        key = (avatar_name, user_id)
+        if key in self._engine_pool:
+            return self._engine_pool[key]
+
+        with self._pool_lock:
+            if key in self._engine_pool:
+                return self._engine_pool[key]
+
+            user_mem_dir = self.storage._get_user_memory_dir(avatar_name, user_id)
+
+            # 实例化 SQLite 存储驱动与持久化队列
+            db_path = os.path.join(user_mem_dir, "erii_memory.db")
+            sqlite_storage = SQLiteStorage(db_path=db_path)
+            task_queue = PersistentTaskQueue(db_path=db_path)
+
+
+            # 适配器包装 LLM 方法
+            llm_adapter = CallableLLMAdapter(fn=self._call_llm_chat)
+
+
+            # ERII引擎配置
+            config = ERIIConfig(
+                storage_dir=user_mem_dir,
+                enable_security_sanitizer=True,
+                enable_pii_scrubbing=False
+            )
+
+            engine = ERIIEngine(
+                storage_dir=user_mem_dir,
+                llm=llm_adapter,
+                storage_driver=sqlite_storage,
+                config=config,
+                task_queue=task_queue
+            )
+
+            self._engine_pool[key] = engine
+
+            # 自动迁移旧数据：如果数据库中无节点，且存在旧版 memory_nodes.json，进行透明迁移
+            self._migrate_legacy_data_if_needed(engine, avatar_name, user_id)
+
+            return engine
+
+    def _migrate_legacy_data_if_needed(self, engine: ERIIEngine, avatar_name: str, user_id: str):
+        """将旧版的 memory_nodes.json 和 core_memory.json 一次性透明迁移至 ERII 存储中"""
+        try:
+            nodes_path = self.storage.get_nodes_path(avatar_name, user_id)
+            if not os.path.exists(nodes_path):
+                return
+
+            existing_erii_nodes = engine.storage.load_nodes(avatar_name, user_id)
+            if existing_erii_nodes:
+                return  # 已存在 ERII 节点，说明已经迁移过
+
+            legacy_nodes = self.storage.load_nodes(avatar_name, user_id)
+            if not legacy_nodes:
+                return
+
+            erii_nodes = []
+            for node in legacy_nodes:
+                # 转换 MemoryType
+                try:
+                    type_val = node.node_type.value if hasattr(node.node_type, "value") else str(node.node_type)
+                    e_type = EriiType(type_val.lower())
+                except ValueError:
+                    e_type = EriiType.FACT
+
+                e_node = EriiNode(
+                    node_id=node.node_id,
+                    user_id=user_id,
+                    agent_id=avatar_name,
+                    node_type=e_type,
+                    content=node.content,
+                    tags=node.tags or [],
+                    base_importance=node.base_importance,
+                    emotional_score=node.emotional_score,
+                    access_count=node.access_count,
+                    created_at=node.created_at,
+                    last_accessed_at=node.last_accessed_at,
+                    confidence=getattr(node, 'confidence', 1.0)
+                )
+                erii_nodes.append(e_node)
+
+            engine.storage.save_nodes(avatar_name, user_id, erii_nodes)
+
+            # 备份旧 core_memory 到 erii core_memory
+            core_memory_path = self._get_core_memory_path(avatar_name, user_id)
+            if os.path.exists(core_memory_path):
+                try:
+                    with open(core_memory_path, "r", encoding="utf-8") as f:
+                        c_data = json.load(f)
+                        c_content = c_data.get("content", "") if isinstance(c_data, dict) else ""
+                        if c_content:
+                            engine.set_core_memory(avatar_name, user_id, c_content)
+                except Exception:
+                    pass
+
+            # 迁移旧版 timeline.jsonl 到 erii timeline_entries
+            timeline_path = self.storage.get_timeline_path(avatar_name, user_id)
+            if os.path.exists(timeline_path):
+                existing_timeline = engine.storage.get_recent_timeline(avatar_name, user_id, limit=1)
+                if not existing_timeline:
+                    try:
+                        with open(timeline_path, "r", encoding="utf-8") as f:
+                            for line in f:
+                                if line.strip():
+                                    record = json.loads(line)
+                                    ts = record.get("timestamp", "")
+                                    entry_text = record.get("entry", "")
+                                    if entry_text:
+                                        engine.storage.add_timeline_entry(
+                                            agent_id=avatar_name,
+                                            user_id=user_id,
+                                            entry=entry_text,
+                                            timestamp=ts
+                                        )
+                    except Exception as e:
+                        logger.error(f"迁移旧版 timeline.jsonl 失败: {e}")
+
+            logger.info(f"成功为 [{avatar_name} / {user_id}] 迁移了 {len(erii_nodes)} 条旧记忆节点与时间线到 ERII 数据库。")
+
+
+
+        except Exception as e:
+            logger.error(f"旧记忆数据自动迁移失败 ({avatar_name}/{user_id}): {e}", exc_info=True)
+
+    def initialize_memory_files(self, avatar_name: str, user_id: str):
+        """初始化角色的记忆存储目录与交互文件"""
+        try:
+            memory_dir = self.storage._get_user_memory_dir(avatar_name, user_id)
+            short_memory_path = self._get_short_memory_path(avatar_name, user_id)
+
             if not os.path.exists(short_memory_path):
                 with open(short_memory_path, "w", encoding="utf-8") as f:
                     json.dump([], f, ensure_ascii=False, indent=2)
-                logger.info(f"创建短期记忆文件: {short_memory_path}")
 
-            # 初始化核心记忆文件（如果不存在）
-            if not os.path.exists(core_memory_path):
-                initial_core_data = {
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "content": ""  # 初始为空字符串
-                }
-                with open(core_memory_path, "w", encoding="utf-8") as f:
-                    json.dump(initial_core_data, f, ensure_ascii=False, indent=2)
-                logger.info(f"创建核心记忆文件: {core_memory_path}")
+            # 触发引擎及可能的迁移
+            self._get_engine(avatar_name, user_id)
 
         except Exception as e:
             logger.error(f"初始化记忆文件失败: {str(e)}")
 
-    def _get_llm_client(self):
-        """获取或创建LLM客户端"""
-        if not self.llm_client:
-            self.llm_client = LLMService(
-                api_key=self.api_key,
-                base_url=self.base_url,
-                model=self.model,
-                max_token=self.max_token,
-                temperature=self.temperature,
-                max_groups=self.max_groups  # 使用初始化时传入的值
-            )
-            logger.info(f"创建LLM客户端，上下文大小设置为: {self.max_groups}轮对话")
-        return self.llm_client
-
-    def _get_avatar_memory_dir(self, avatar_name: str, user_id: str) -> str:
-        """获取角色记忆目录，如果不存在则创建"""
-        avatar_memory_dir = os.path.join(self.root_dir, "data", "avatars", avatar_name, "memory", user_id)
-        os.makedirs(avatar_memory_dir, exist_ok=True)
-        return avatar_memory_dir
-
     def _get_short_memory_path(self, avatar_name: str, user_id: str) -> str:
-        """获取短期记忆文件路径"""
-        memory_dir = self._get_avatar_memory_dir(avatar_name, user_id)
-        return os.path.join(memory_dir, "short_memory.json")
+        return os.path.join(self.storage._get_user_memory_dir(avatar_name, user_id), "short_memory.json")
 
     def _get_core_memory_path(self, avatar_name: str, user_id: str) -> str:
-        """获取核心记忆文件路径"""
-        memory_dir = self._get_avatar_memory_dir(avatar_name, user_id)
-        return os.path.join(memory_dir, "core_memory.json")
+        return os.path.join(self.storage._get_user_memory_dir(avatar_name, user_id), "core_memory.json")
 
-    def _get_core_memory_backup_path(self, avatar_name: str, user_id: str) -> str:
-        """获取核心记忆备份文件路径"""
-        memory_dir = self._get_avatar_memory_dir(avatar_name, user_id)
-        backup_dir = os.path.join(memory_dir, "backup")
-        os.makedirs(backup_dir, exist_ok=True)
-        return os.path.join(backup_dir, "core_memory_backup.json")
+    def get_selective_memory_prompt(self, avatar_name: str, user_id: str, query: str) -> str:
+        """
+        前置选择性检索：利用 ERIIEngine 混合召回与 Diversity Cap
+        生成注入 Prompt 的 Markdown 内容。
+        """
+        try:
+            engine = self._get_engine(avatar_name, user_id)
+            recalled_context = engine.recall(agent_id=avatar_name, user_id=user_id, query=query, top_k=5)
+            if recalled_context:
+                return recalled_context
+
+            core_mem = self.get_core_memory(avatar_name, user_id)
+            return f"# 核心记忆\n{core_mem}" if core_mem else ""
+        except Exception as e:
+            logger.error(f"获取选择性记忆 Prompt 失败: {e}")
+            core_mem = self.get_core_memory(avatar_name, user_id)
+            return f"# 核心记忆\n{core_mem}" if core_mem else ""
 
     def add_conversation(self, avatar_name: str, user_message: str, bot_reply: str, user_id: str,
-                         is_system_message: bool = False):
-        """
-        添加对话到短期记忆，并更新对话计数。
-        每达到10轮对话，自动更新核心记忆。
-
-        Args:
-            avatar_name: 角色名称
-            user_message: 用户消息
-            bot_reply: 机器人回复
-            user_id: 用户ID，用于隔离不同用户的记忆
-            is_system_message: 是否为系统消息，如果是则不记录
-        """
-        # 确保对话计数器已初始化
-        conversation_key = f"{avatar_name}_{user_id}"
-        if conversation_key not in self.conversation_count:
-            self.conversation_count[conversation_key] = 0
-
-        # 如果是系统消息或错误消息则跳过记录
+                          is_system_message: bool = False):
+        """添加对话到短期记忆，并推入 ERII 持久化后台归档队列"""
         if is_system_message or bot_reply.startswith("Error:"):
-            logger.debug(f"跳过记录消息: {user_message[:30]}...")
             return
 
         try:
-            # 确保记忆目录存在
-            memory_dir = self._get_avatar_memory_dir(avatar_name, user_id)
+            # 1. 更新短期对话缓存（UI渲染用）
             short_memory_path = self._get_short_memory_path(avatar_name, user_id)
-
-            logger.info(f"保存对话到用户记忆: 角色={avatar_name}, 用户ID={user_id}")
-            logger.debug(f"记忆存储路径: {short_memory_path}")
-
-            # 读取现有短期记忆
             short_memory = []
             if os.path.exists(short_memory_path):
                 try:
                     with open(short_memory_path, "r", encoding="utf-8") as f:
                         short_memory = json.load(f)
-                except json.JSONDecodeError:
-                    logger.warning(f"短期记忆文件损坏，重置为空列表: {short_memory_path}")
+                except Exception:
+                    short_memory = []
 
-            # 添加新对话
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            new_conversation = {
+            short_memory.append({
                 "timestamp": timestamp,
                 "user": user_message,
                 "bot": bot_reply
-            }
-            short_memory.append(new_conversation)
+            })
 
-            # 保留最近50轮对话
             if len(short_memory) > self.max_groups:
                 short_memory = short_memory[-self.max_groups:]
 
-            # 保存更新后的短期记忆
             with open(short_memory_path, "w", encoding="utf-8") as f:
                 json.dump(short_memory, f, ensure_ascii=False, indent=2)
 
-            # 更新对话计数
-            self.conversation_count[conversation_key] += 1
-            current_count = self.conversation_count[conversation_key]
-            logger.debug(f"当前对话计数: {current_count}/10 (角色={avatar_name}, 用户ID={user_id})")
-
-            # 每10轮对话更新一次核心记忆
-            if self.conversation_count[conversation_key] >= 10:
-                logger.info(f"角色 {avatar_name} 为用户 {user_id} 达到10轮对话，开始更新核心记忆")
-                context = self.get_recent_context(avatar_name, user_id)
-                self.update_core_memory(avatar_name, user_id, context)
-                self.conversation_count[conversation_key] = 0
+            # 2. 推入 ERII 持久化队列
+            engine = self._get_engine(avatar_name, user_id)
+            engine.remember(agent_id=avatar_name, user_id=user_id, user_message=user_message, bot_reply=bot_reply)
 
         except Exception as e:
-            logger.error(f"添加对话到短期记忆失败: {str(e)}")
-
-    def _build_memory_prompt(self, filepath: str) -> str:
-        """
-        从指定目录读取 md 文件。
-
-        Args:
-            filepath: md 文件的路径。
-
-        Returns:
-            一个包含 md 文件内容的字符串。
-        """
-        try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                return f.read()
-        except FileNotFoundError:
-            logger.error(f"核心记忆提示词模板 {filepath} 未找到。")
-            return ""
-        except Exception as e:
-            logger.error(f"读取核心提示词模板 {filepath} 时出错: {e}")
-            return ""
-
-    def _generate_core_memory(self, prompt: str, existing_core_memory: str, context: list, user_id: str) -> str:
-        response = self.deepseek.get_response(
-            message=f"请根据设定和要求，生成新的核心记忆。现有的核心记忆为：{existing_core_memory}",
-            user_id=user_id,
-            system_prompt=prompt,
-            core_memory=existing_core_memory,
-            previous_context=context
-        )
-
-        return response
-
-    def update_core_memory(self, avatar_name: str, user_id: str, context: list) -> bool:
-        """
-        更新角色的核心记忆
-
-        Args:
-            avatar_name: 角色名称
-            user_id: 用户ID
-            message: 用户消息
-            response: 机器人响应
-
-        Returns:
-            bool: 是否成功更新
-        """
-        try:
-            # 获取核心记忆文件路径
-            core_memory_path = self._get_core_memory_path(avatar_name, user_id)
-
-            # 读取现有核心记忆
-            existing_core_memory = ""
-            existing_core_data = []
-
-            if os.path.exists(core_memory_path):
-                try:
-                    with open(core_memory_path, "r", encoding="utf-8") as f:
-                        core_data = json.load(f)
-                        # 处理数组格式（旧格式）
-                        if isinstance(core_data, list) and len(core_data) > 0:
-                            existing_core_memory = core_data[0].get("content", "")
-                        else:
-                            # 新格式（单个对象）
-                            existing_core_memory = core_data.get("content", "")
-                        existing_core_data = core_data
-                except Exception as e:
-                    logger.error(f"读取核心记忆失败: {str(e)}")
-                    # 创建空的核心记忆
-                    existing_core_memory = ""
-                    existing_core_data = None
-
-            # 如果没有现有记忆，创建一个空的对象（新格式）
-            if not existing_core_data:
-                existing_core_data = {
-                    "timestamp": self._get_timestamp(),
-                    "content": ""
-                }
-
-            # 构建提示词
-            prompt = self._build_memory_prompt('src/base/memory.md')
-
-            # 调用LLM生成新的核心记忆
-            new_core_memory = self._generate_core_memory(prompt, existing_core_memory, context, user_id)
-
-            # 如果生成失败，保留原有记忆
-            if not new_core_memory or 'Error' in new_core_memory or 'error' in new_core_memory or '错误' in new_core_memory:
-                logger.warning("生成核心记忆失败，保留原有记忆")
-                return False
-
-            # 更新核心记忆文件（使用新格式：单个对象）
-            updated_core_data = {
-                "timestamp": self._get_timestamp(),
-                "content": new_core_memory
-            }
-
-            with open(core_memory_path, "w", encoding="utf-8") as f:
-                json.dump(updated_core_data, f, ensure_ascii=False, indent=2)
-
-            logger.info(f"已更新角色 {avatar_name} 用户 {user_id} 的核心记忆")
-            return True
-
-        except Exception as e:
-            logger.error(f"更新核心记忆失败: {str(e)}")
-
-            # 如果在处理过程中发生错误，确保不会丢失现有记忆
-            try:
-                if os.path.exists(core_memory_path) and existing_core_data:
-                    with open(core_memory_path, "w", encoding="utf-8") as f:
-                        json.dump(existing_core_data, f, ensure_ascii=False, indent=2)
-            except Exception as recovery_error:
-                logger.error(f"恢复核心记忆失败: {str(recovery_error)}")
-
-            return False
+            logger.error(f"添加对话到记忆服务失败: {str(e)}")
 
     def get_core_memory(self, avatar_name: str, user_id: str) -> str:
-        """
-        获取角色的核心记忆
-
-        Args:
-            avatar_name: 角色名称
-            user_id: 用户ID
-
-        Returns:
-            str: 核心记忆内容
-        """
         try:
-            # 获取核心记忆文件路径
+            engine = self._get_engine(avatar_name, user_id)
+            core_mem = engine.get_core_memory(agent_id=avatar_name, user_id=user_id)
+            if core_mem:
+                return core_mem
+            
+            # Fallback legacy check
             core_memory_path = self._get_core_memory_path(avatar_name, user_id)
-
-            # 如果文件不存在，返回空字符串
             if not os.path.exists(core_memory_path):
                 return ""
-
-            # 读取核心记忆文件
             with open(core_memory_path, "r", encoding="utf-8") as f:
                 core_data = json.load(f)
-
-                # 处理数组格式
                 if isinstance(core_data, list) and len(core_data) > 0:
                     return core_data[0].get("content", "")
-                else:
-                    # 兼容旧格式
-                    return core_data.get("content", "")
+                return core_data.get("content", "") if isinstance(core_data, dict) else ""
         except Exception as e:
             logger.error(f"获取核心记忆失败: {str(e)}")
             return ""
 
-    def get_recent_context(self, avatar_name: str, user_id: str, context_size: int = None) -> List[Dict]:
-        """
-        获取最近的对话上下文，用于重启后恢复对话连续性
-        直接使用LLM服务配置的max_groups作为上下文大小
-
-        Args:
-            avatar_name: 角色名称
-            user_id: 用户ID，用于获取特定用户的记忆
-            context_size: 已废弃参数，保留仅为兼容性，实际使用LLM配置
-        """
+    def update_core_memory(self, avatar_name: str, user_id: str, context: List[Dict] = None) -> bool:
+        """更新核心记忆内容"""
         try:
-            # 获取LLM客户端的配置值
-            llm_client = self._get_llm_client()
-            max_groups = llm_client.config["max_groups"]
-            logger.info(f"使用LLM配置的对话轮数: {max_groups}")
+            engine = self._get_engine(avatar_name, user_id)
+            nodes = engine.storage.load_nodes(avatar_name, user_id)
+            core_nodes = [n for n in nodes if n.node_type == EriiType.CORE or engine.decay_evaluator.evaluate_node(n) >= 0.75]
+            top_nodes = sorted(core_nodes, key=lambda n: engine.decay_evaluator.evaluate_node(n), reverse=True)[:10]
+            summary_lines = [f"[{n.node_type.value}] {n.content}" for n in top_nodes]
 
+            if not summary_lines and context:
+                summary_lines = [f"{item['role']}: {item['content']}" for item in context[-6:]]
+
+            content = "；".join(summary_lines) if summary_lines else ""
+            engine.set_core_memory(agent_id=avatar_name, user_id=user_id, content=content)
+
+            # 保持同步 core_memory.json
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            updated_core_data = {"timestamp": now_str, "content": content}
+            with open(self._get_core_memory_path(avatar_name, user_id), "w", encoding="utf-8") as f:
+                json.dump(updated_core_data, f, ensure_ascii=False, indent=2)
+
+            return True
+        except Exception as e:
+            logger.error(f"更新核心记忆失败: {str(e)}")
+            return False
+
+    def save_core_memory(self, avatar_name: str, user_id: str, content: str) -> bool:
+        """从外部手动设置 Core Memory"""
+        try:
+            engine = self._get_engine(avatar_name, user_id)
+            engine.set_core_memory(agent_id=avatar_name, user_id=user_id, content=content)
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            updated_core_data = {"timestamp": now_str, "content": content}
+            with open(self._get_core_memory_path(avatar_name, user_id), "w", encoding="utf-8") as f:
+                json.dump(updated_core_data, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception as e:
+            logger.error(f"保存核心记忆失败: {str(e)}")
+            return False
+
+    def get_recent_context(self, avatar_name: str, user_id: str, context_size: int = None) -> List[Dict]:
+        try:
             short_memory_path = self._get_short_memory_path(avatar_name, user_id)
-
             if not os.path.exists(short_memory_path):
-                logger.info(f"短期记忆不存在: {avatar_name} 用户: {user_id}")
                 return []
 
             with open(short_memory_path, "r", encoding="utf-8") as f:
                 short_memory = json.load(f)
 
-            # 转换为LLM接口要求的消息格式
             context = []
-            for conv in short_memory[-max_groups:]:  # 使用max_groups轮对话
-                context.append({"role": "user", "content": conv["user"]})
+            for conv in short_memory[-self.max_groups:]:
+                user_entry = {"role": "user", "content": conv["user"]}
+                # 保留时间戳，供 LLMService._build_time_context 计算对话时间间隔
+                if "timestamp" in conv:
+                    user_entry["timestamp"] = conv["timestamp"]
+                context.append(user_entry)
                 context.append({"role": "assistant", "content": conv["bot"]})
 
-            logger.info(f"已加载 {len(context) // 2} 轮对话作为上下文")
             return context
-
         except Exception as e:
             logger.error(f"获取最近上下文失败: {str(e)}")
             return []
 
-    def _get_timestamp(self) -> str:
-        """获取当前时间戳"""
-        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
     def has_user_memory(self, avatar_name: str, user_id: str) -> bool:
-        """
-        检查是否存在该用户的私聊记忆
-
-        Args:
-            avatar_name: 角色名称
-            user_id: 用户ID
-
-        Returns:
-            bool: 如果存在私聊记忆返回True，否则返回False
-        """
         try:
-            # 检查短期记忆是否存在且非空
-            short_memory_path = self._get_short_memory_path(avatar_name, user_id)
-            if os.path.exists(short_memory_path):
-                with open(short_memory_path, "r", encoding="utf-8") as f:
-                    short_memory = json.load(f)
-                    if short_memory:  # 如果列表不为空
-                        logger.debug(f"用户 {user_id} 与角色 {avatar_name} 有私聊记忆，条数: {len(short_memory)}")
-                        return True
-
-            # 检查核心记忆是否存在且非空
-            core_memory_path = self._get_core_memory_path(avatar_name, user_id)
-            if os.path.exists(core_memory_path):
-                with open(core_memory_path, "r", encoding="utf-8") as f:
-                    core_memory = json.load(f)
-                    # 处理数组格式（旧格式）
-                    if isinstance(core_memory, list) and len(core_memory) > 0:
-                        if core_memory[0].get("content", "").strip():  # 如果内容不为空
-                            logger.debug(f"用户 {user_id} 与角色 {avatar_name} 有核心记忆")
-                            return True
-                    else:
-                        # 新格式（单个对象）
-                        if core_memory.get("content", "").strip():  # 如果内容不为空
-                            logger.debug(f"用户 {user_id} 与角色 {avatar_name} 有核心记忆")
-                            return True
-
-            logger.debug(f"用户 {user_id} 与角色 {avatar_name} 没有私聊记忆")
+            engine = self._get_engine(avatar_name, user_id)
+            nodes = engine.storage.load_nodes(avatar_name, user_id)
+            if nodes:
+                return True
+            return bool(self.get_core_memory(avatar_name, user_id))
+        except Exception:
             return False
 
-        except Exception as e:
-            logger.error(f"检查用户记忆失败: {str(e)}")
-            return False
+    # --------------------------------------------------------------------------
+    # 动态记忆节点 SDK 操作方法 (提供给 WebUI 路由或开发接口调用)
+    # --------------------------------------------------------------------------
+
+    def get_all_nodes(self, avatar_name: str, user_id: str) -> List[Dict[str, Any]]:
+        """获取用户的所有记忆节点，附带实时算出的有效衰减权重"""
+        engine = self._get_engine(avatar_name, user_id)
+        nodes = engine.storage.load_nodes(avatar_name, user_id)
+        res = []
+        for n in nodes:
+            d = n.to_dict()
+            d['effective_weight'] = engine.decay_evaluator.evaluate_node(n)
+            res.append(d)
+        return res
+
+    def add_custom_node(
+        self, avatar_name: str, user_id: str, content: str, node_type: str = "fact",
+        tags: Optional[List[str]] = None, importance: float = 0.8, confidence: float = 0.9
+    ) -> Dict[str, Any]:
+        """手动添加一个新的动态记忆节点"""
+        import uuid
+        engine = self._get_engine(avatar_name, user_id)
+
+        try:
+            e_type = EriiType(node_type.lower())
+        except ValueError:
+            e_type = EriiType.FACT
+
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        new_node = EriiNode(
+            node_id=f"n_{uuid.uuid4().hex[:8]}",
+            user_id=user_id,
+            agent_id=avatar_name,
+            node_type=e_type,
+            content=content,
+            tags=tags or [],
+            base_importance=importance,
+            emotional_score=0.0,
+            confidence=confidence,
+            created_at=ts,
+            last_accessed_at=ts
+        )
+
+        nodes = engine.storage.load_nodes(avatar_name, user_id)
+        nodes.append(new_node)
+        engine.storage.save_nodes(avatar_name, user_id, nodes)
+        return new_node.to_dict()
+
+    def delete_node(self, avatar_name: str, user_id: str, node_id: str) -> bool:
+        """删除指定 ID 的记忆节点"""
+        engine = self._get_engine(avatar_name, user_id)
+        nodes = engine.storage.load_nodes(avatar_name, user_id)
+        updated = [n for n in nodes if n.node_id != node_id]
+        if len(updated) != len(nodes):
+            engine.storage.save_nodes(avatar_name, user_id, updated)
+            return True
+        return False
+
+    def export_memory_pack(self, avatar_name: str, user_id: str, export_path: Optional[str] = None) -> MemoryPack:
+        """导出 MemoryPack 记忆快照"""
+        engine = self._get_engine(avatar_name, user_id)
+        return engine.export_memory(agent_id=avatar_name, user_id=user_id, export_path=export_path)
+
+    def import_memory_pack(self, avatar_name: str, user_id: str, pack_or_path: Any, overwrite: bool = False) -> MemoryPack:
+        """导入 MemoryPack 记忆快照"""
+        engine = self._get_engine(avatar_name, user_id)
+        return engine.import_memory(pack_or_path=pack_or_path, agent_id=avatar_name, user_id=user_id, overwrite=overwrite)
+
+    def get_timeline_entries(self, avatar_name: str, user_id: str, limit: int = 50) -> List[str]:
+        """获取角色的第一人称体验时间线与心路感悟综合记录"""
+        engine = self._get_engine(avatar_name, user_id)
+
+        # 1. 如果存在旧版 timeline.jsonl 且数据库尚无记录，补全无感迁移
+        timeline_path = self.storage.get_timeline_path(avatar_name, user_id)
+        if os.path.exists(timeline_path):
+            existing_timeline = engine.storage.get_recent_timeline(avatar_name, user_id, limit=1)
+            if not existing_timeline:
+                try:
+                    with open(timeline_path, "r", encoding="utf-8") as f:
+                        for line in f:
+                            if line.strip():
+                                record = json.loads(line)
+                                ts = record.get("timestamp", "")
+                                entry_text = record.get("entry", "")
+                                if entry_text:
+                                    engine.storage.add_timeline_entry(
+                                        agent_id=avatar_name,
+                                        user_id=user_id,
+                                        entry=entry_text,
+                                        timestamp=ts
+                                    )
+                except Exception as e:
+                    logger.error(f"补全迁移旧版 timeline.jsonl 失败: {e}")
+
+        # 2. 获取体验时间线记录
+        entries = engine.storage.get_recent_timeline(avatar_name, user_id, limit=limit)
+
+        # 3. 结合 E.R.I.I 第一人称心理独白/日记节点 (THOUGHT/DIARY)
+        diaries = engine.get_diary_timeline(avatar_name, user_id, limit=limit)
+        for d in diaries:
+            ts = d.get("created_at", "")
+            content = d.get("content", "")
+            if content:
+                diary_line = f"[{ts}] (心路感悟) {content}"
+                if diary_line not in entries:
+                    entries.append(diary_line)
+
+        return entries
+
