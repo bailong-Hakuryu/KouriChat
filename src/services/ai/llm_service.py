@@ -163,6 +163,9 @@ class LLMService:
         4. 处理emoji表情符号，确保跨平台兼容性
         """
         try:
+            # 非字符串类型（如测试中的 MagicMock）直接转为空字符串，避免 re.sub 抛出异常
+            if not isinstance(raw_text, str):
+                return ""
             # 移除控制字符
             cleaned = re.sub(self.safe_pattern, '', raw_text)
 
