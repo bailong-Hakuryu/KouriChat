@@ -355,6 +355,7 @@ class MemoryService:
                 # 保留时间戳，供 LLMService._build_time_context 计算对话时间间隔
                 if "timestamp" in conv:
                     user_entry["timestamp"] = conv["timestamp"]
+                context.append(user_entry)
                 bot_entry = {"role": "assistant", "content": conv["bot"]}
                 if "timestamp" in conv:
                     bot_entry["timestamp"] = conv["timestamp"]
