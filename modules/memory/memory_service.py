@@ -470,18 +470,37 @@ class MemoryService:
                 except Exception as e:
                     logger.error(f"补全迁移旧版 timeline.jsonl 失败: {e}")
 
-        # 2. 获取体验时间线记录
-        entries = engine.storage.get_recent_timeline(avatar_name, user_id, limit=limit)
+        # 2. 获取体验时间线记录与心理独白节点，合并并按时间降序排列
+        raw_entries = engine.storage.get_recent_timeline(avatar_name, user_id, limit=limit)
+        combined = []
+        seen_keys = set()
 
-        # 3. 结合 E.R.I.I 第一人称心理独白/日记节点 (THOUGHT/DIARY)
+        for e in raw_entries:
+            if e.startswith("[") and "]" in e:
+                idx = e.index("]")
+                ts = e[1:idx].strip()
+                content = e[idx + 1:].strip()
+                if not content.startswith("(心路感悟)"):
+                    content = f"(心路感悟) {content}"
+                key = (ts, content)
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    combined.append((ts, content))
+
         diaries = engine.get_diary_timeline(avatar_name, user_id, limit=limit)
         for d in diaries:
-            ts = d.get("created_at", "")
-            content = d.get("content", "")
+            ts = d.get("created_at", "").strip()
+            content = d.get("content", "").strip()
             if content:
-                diary_line = f"[{ts}] (心路感悟) {content}"
-                if diary_line not in entries:
-                    entries.append(diary_line)
+                if not content.startswith("(心路感悟)"):
+                    content = f"(心路感悟) {content}"
+                key = (ts, content)
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    combined.append((ts, content))
 
-        return entries
+        # 按时间戳降序（最新在上）
+        combined.sort(key=lambda x: x[0], reverse=True)
+
+        return [f"[{ts}] {content}" if ts else content for ts, content in combined[:limit]]
 

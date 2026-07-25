@@ -67,11 +67,19 @@ class MemoryDecayEngine:
                 system_prompt="你是一个精准的数据分析和结构化 JSON 转化组件。只输出符合 Schema 要求的 JSON。"
             )
 
-            json_str = raw_response.strip()
-            if '```json' in json_str:
-                json_str = json_str.split('```json')[1].split('```')[0].strip()
-            elif '```' in json_str:
-                json_str = json_str.split('```')[1].split('```')[0].strip()
+            json_str = re.sub(r"<think>.*?</think>", "", raw_response, flags=re.DOTALL).strip()
+            if "```" in json_str:
+                match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", json_str, flags=re.DOTALL)
+                if match:
+                    json_str = match.group(1).strip()
+                else:
+                    match_obj = re.search(r"(\{.*\})", json_str, flags=re.DOTALL)
+                    if match_obj:
+                        json_str = match_obj.group(1).strip()
+            else:
+                match_obj = re.search(r"(\{.*\})", json_str, flags=re.DOTALL)
+                if match_obj:
+                    json_str = match_obj.group(1).strip()
 
             parsed = json.loads(json_str)
 
