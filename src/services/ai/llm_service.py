@@ -339,8 +339,10 @@ class LLMService:
         clean_history = []
         for m in self.chat_contexts.get(user_id, [])[-self.config["max_groups"] * 2:]:
             content = m["content"]
+            # 时间前缀只加在 user 消息上，让模型感知用户发言时间
+            # assistant 消息不加，避免模型学习并在输出中复现 [HH:MM] 格式
             time_prefix = ""
-            if "timestamp" in m and m["timestamp"]:
+            if m["role"] == "user" and "timestamp" in m and m["timestamp"]:
                 try:
                     dt = datetime.datetime.fromisoformat(m["timestamp"])
                     time_prefix = dt.strftime("[%H:%M] ")
@@ -358,7 +360,8 @@ class LLMService:
         history_lines = []
         for msg in chat_history:
             time_prefix = ""
-            if "timestamp" in msg and msg["timestamp"]:
+            # 同样只为 user 消息加时间前缀
+            if msg["role"] == "user" and "timestamp" in msg and msg["timestamp"]:
                 try:
                     dt = datetime.datetime.fromisoformat(msg["timestamp"])
                     time_prefix = dt.strftime("[%H:%M] ")

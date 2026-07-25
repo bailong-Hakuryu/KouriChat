@@ -70,7 +70,7 @@ class TestMemoryAndPerceptionRobustness(unittest.TestCase):
         self.assertTrue("实时连续进行中" in time_ctx or "连续" in time_ctx)
 
     def test_message_timestamp_formatting_for_api(self):
-        """Verify timestamp [HH:MM] is prepended to history messages in LLM request."""
+        """Verify timestamp [HH:MM] is prepended to USER history messages only (not assistant)."""
         with patch("src.services.ai.llm_service.LLMService._get_available_models", return_value=["deepseek-ai/DeepSeek-V4-Pro"]):
             llm = LLMService(
                 api_key="mock_key",
@@ -94,8 +94,10 @@ class TestMemoryAndPerceptionRobustness(unittest.TestCase):
             llm.get_response("明天见", user_id, "人设提示")
             sent = mock_create.call_args[1]["messages"]
             history = sent[1:]
+            # user 消息应带时间前缀
             self.assertEqual(history[0]["content"], "[21:38] 到家了，绘梨衣")
-            self.assertEqual(history[1]["content"], "[21:38] 晚安啦Sakura")
+            # assistant 消息不应带时间前缀（避免模型学习并在输出中复现时间戳格式）
+            self.assertEqual(history[1]["content"], "晚安啦Sakura")
 
     def test_archiver_perspective_and_node_extraction(self):
         """Verify archiver prompt formats agent_id & user_id and extracts nodes with character perspective."""
